@@ -217,7 +217,11 @@ describe('Async renderToString', () => {
 			</ul>
 		);
 
-		const expected = `<ul><!--$s--><li>one</li><!--/$s--><!--$s--><li>two</li><!--/$s--><!--$s--><li>three</li><!--/$s--></ul>`;
+		// `three` carries no boundary markers: siblings are now rendered in tree
+		// order, so by the time it renders, its own suspender has already been
+		// resolved below and it never suspends. Only children that actually
+		// suspend are wrapped.
+		const expected = `<ul><!--$s--><li>one</li><!--/$s--><!--$s--><li>two</li><!--/$s--><li>three</li></ul>`;
 
 		suspendedOne.resolve();
 		suspendedTwo.resolve();
@@ -320,18 +324,17 @@ describe('Async renderToString', () => {
 		expect(rendered).to.equal('<!--$s--><p>ok</p><!--/$s-->');
 	});
 
-	// https://github.com/preactjs/preact-render-to-string/issues/<TBD>
-	//
-	// A subtree that suspends is rendered *out of tree order*: the renderer
-	// walks past the boundary, renders the siblings that follow it, and only
-	// comes back to the boundary's content once the promise settles. `useId()`
-	// numbers in render order, so ids inside the boundary come out offset by
+	// A subtree that suspends used to be rendered *out of tree order*: the
+	// renderer
+	// walked past the boundary, rendered the siblings that follow it, and only
+	// came back to the boundary's content once the promise settled. `useId()`
+	// numbers in render order, so ids inside the boundary came out offset by
 	// the number of `useId()` calls that follow it.
 	//
 	// The client renders in tree order, and Preact does not re-apply
-	// attributes while hydrating, so the DOM silently keeps the server's id
-	// while the component holds a different one. Here the ids are *swapped*:
-	// `getElementById(id)` resolves to another component's element.
+	// attributes while hydrating, so the DOM silently kept the server's id
+	// while the component held a different one. The ids came out *swapped*:
+	// `getElementById(id)` resolved to another component's element.
 	//
 	// The oracle is a synchronous render of the same tree with the chunk
 	// already resolved — which is exactly what the client renders when a

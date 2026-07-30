@@ -36,6 +36,38 @@ const BEGIN_SUSPENSE_DENOMINATOR = '<!--$s-->';
 const END_SUSPENSE_DENOMINATOR = '<!--/$s-->';
 
 /**
+ * Awaits every Promise in a render result. Resolves nested Promises with a
+ * maximum depth of 25.
+ * @param {Array} rendered
+ * @returns {Promise<Array<string>>}
+ */
+async function settle(rendered) {
+	let count = 0;
+	let resolved = rendered;
+
+	while (
+		resolved.some((element) => element && typeof element.then === 'function') &&
+		count++ < 25
+	) {
+		resolved = (await Promise.all(resolved)).flat();
+	}
+
+	return resolved;
+}
+
+/**
+ * Awaits a single render result — string, Array or Promise, at any nesting —
+ * down to one string.
+ * @param {string | Array | Promise} result
+ * @returns {Promise<string>}
+ */
+async function resolveRender(result) {
+	if (typeof result == 'string') return result;
+	if (isArray(result)) return (await settle(result)).join(EMPTY_STR);
+	return resolveRender(await result);
+}
+
+/**
  * Wraps a render result with suspense boundary markers, handling all possible
  * return types from _renderToString: string, Array, or Promise.
  * @param {string | Array | Promise} result
@@ -150,20 +182,7 @@ export async function renderToStringAsync(vnode, context) {
 		);
 
 		if (isArray(rendered)) {
-			let count = 0;
-			let resolved = rendered;
-
-			// Resolving nested Promises with a maximum depth of 25
-			while (
-				resolved.some(
-					(element) => element && typeof element.then === 'function'
-				) &&
-				count++ < 25
-			) {
-				resolved = (await Promise.all(resolved)).flat();
-			}
-
-			return resolved.join(EMPTY_STR);
+			return (await settle(rendered)).join(EMPTY_STR);
 		}
 
 		return rendered;
@@ -291,6 +310,48 @@ function _renderToString(
 
 			if (typeof childRender == 'string') {
 				rendered = rendered + childRender;
+			} else if (asyncMode) {
+				// This child suspended. Render the siblings that follow it only
+				// once it settles, so `useId()` — whose counter advances in
+				// render order — numbers them exactly as the client will when it
+				// hydrates in tree order. Rendering ahead here is what made
+				// server and client ids disagree.
+				//
+				// `renderToChunks` and the streaming renderers use the *sync*
+				// entry point (`asyncMode` false) and keep rendering ahead, since
+				// emitting a boundary's siblings before its content is the whole
+				// point there.
+				const head = rendered;
+				const pending = childRender;
+				const remaining = vnode.slice(i + 1);
+
+				return [
+					head,
+					(async () => {
+						let out = await resolveRender(pending);
+
+						for (let j = 0; j < remaining.length; j++) {
+							const child = remaining[j];
+							if (child == null || typeof child == 'boolean') continue;
+
+							out =
+								out +
+								(await resolveRender(
+									_renderToString(
+										child,
+										context,
+										isSvgMode,
+										selectValue,
+										parent,
+										asyncMode,
+										renderer
+									)
+								));
+						}
+
+						return out;
+					})()
+				];
 			} else {
 				if (!renderArray) {
 					// oxlint-disable-next-line no-new-array
