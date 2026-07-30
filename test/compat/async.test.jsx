@@ -1,4 +1,4 @@
-import { renderToStringAsync } from '../../src/index.js';
+import { renderToString, renderToStringAsync } from '../../src/index.js';
 import { h, Fragment } from 'preact';
 import { Suspense, useId, lazy, createContext } from 'preact/compat';
 import { expect, describe, it } from 'vitest';
@@ -318,6 +318,66 @@ describe('Async renderToString', () => {
 		suspended.resolve();
 		const rendered = await promise;
 		expect(rendered).to.equal('<!--$s--><p>ok</p><!--/$s-->');
+	});
+
+	// https://github.com/preactjs/preact-render-to-string/issues/<TBD>
+	//
+	// A subtree that suspends is rendered *out of tree order*: the renderer
+	// walks past the boundary, renders the siblings that follow it, and only
+	// comes back to the boundary's content once the promise settles. `useId()`
+	// numbers in render order, so ids inside the boundary come out offset by
+	// the number of `useId()` calls that follow it.
+	//
+	// The client renders in tree order, and Preact does not re-apply
+	// attributes while hydrating, so the DOM silently keeps the server's id
+	// while the component holds a different one. Here the ids are *swapped*:
+	// `getElementById(id)` resolves to another component's element.
+	//
+	// The oracle is a synchronous render of the same tree with the chunk
+	// already resolved — which is exactly what the client renders when a
+	// framework preloads route chunks before hydrating.
+	it('should number useId the same as an in-order (hydration) render', async () => {
+		function Field({ name }) {
+			return <span data-name={name} id={useId()} />;
+		}
+
+		function Body() {
+			return (
+				<Fragment>
+					<Field name="inside-1" />
+					<Field name="inside-2" />
+				</Fragment>
+			);
+		}
+
+		function App({ Chunk }) {
+			return (
+				<div>
+					<Field name="before" />
+					<Suspense fallback={null}>
+						<Chunk />
+					</Suspense>
+					<Field name="after-1" />
+					<Field name="after-2" />
+				</div>
+			);
+		}
+
+		const idsByName = (html) =>
+			Object.fromEntries(
+				[...html.matchAll(/data-name="([^"]+)" id="([^"]+)"/g)].map(
+					([, name, id]) => [name, id]
+				)
+			);
+
+		const server = idsByName(
+			await renderToStringAsync(
+				<App Chunk={lazy(() => Promise.resolve({ default: Body }))} />
+			)
+		);
+		const client = idsByName(renderToString(<App Chunk={Body} />));
+
+		expect(server).to.deep.equal(client);
 	});
 
 	it('should work with an in-render suspension', async () => {
